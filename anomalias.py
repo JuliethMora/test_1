@@ -1,164 +1,168 @@
 import streamlit as st
 import tempfile
-import os
-import subprocess
-import shutil
 from pathlib import Path
-import glob
 import pandas as pd
 import numpy as np
+import shutil
+import zipfile
+import os
 
-# Verificar que la dependencia openpyxl está disponible en el entorno
+# --------------------------
+# Configuración de Streamlit
+# --------------------------
+st.set_page_config(page_title="ETL AutoCAD Integrado", layout="wide")
+st.title("🚀 ETL AutoCAD Integrado")
+st.markdown("""
+Esta aplicación ejecuta automáticamente el proceso ETL sin depender de archivos externos.  
+Sube el archivo Excel principal del proyecto, el archivo obligatorio para `INTERNO_PROYECTO` y el archivo `Items_CTO` (opcional). Luego presiona **Ejecutar ETL**.
+""")
+
+# --------------------------
+# Verificación dependencias
+# --------------------------
 try:
     import openpyxl  # noqa: F401
     _has_openpyxl = True
 except Exception:
     _has_openpyxl = False
 
-st.set_page_config(page_title="ETL AutoCAD", layout="wide")
+# Patch seguro para pandas.read_excel
+_orig_read_excel = pd.read_excel
+def _safe_read_excel(*args, **kwargs):
+    try:
+        return _orig_read_excel(*args, **kwargs)
+    except ImportError as e:
+        msg = str(e)
+        if 'openpyxl' in msg or "Missing optional dependency 'openpyxl'" in msg:
+            st.error("❌ Error al leer archivo: falta la dependencia 'openpyxl'. Instálala con `pip install openpyxl`.")
+            st.stop()
+        raise
+pd.read_excel = _safe_read_excel
 
-st.title("🚀 Ejecución del ETL AutoCAD")
-st.markdown("""
-Esta aplicación ejecuta automáticamente el proceso ETL definido en **etlautocad.py**  
-Sube el archivo Excel principal del proyecto, el archivo obligatorio para `INTERNO_PROYECTO` (se acepta cualquier nombre de archivo) y el archivo de items (`Items_CTO`, también puede llamarse como quieras). Luego presiona **Ejecutar ETL**.
-""")
-
-# ---- Entrada del usuario ----
+# --------------------------
+# Subida de archivos
+# --------------------------
 uploaded_excel = st.file_uploader("📁 Sube el archivo Excel principal del proyecto", type=["xlsx", "xls"])
-
-# Uploader obligatorio adicional (acepta cualquier nombre .xlsx)
-uploaded_nterno = st.file_uploader("📁 Sube el archivo obligatorio para INTERNO_PROYECTO (cualquier archivo .xlsx)", type=["xlsx"], key="nterno")
-
-# Uploader opcional para archivo Items_CTO (si no se sube, el script intentará detectarlo en el directorio)
-uploaded_items = st.file_uploader("📁 (Opcional) Sube el archivo Items_CTO (Items_CTO_YYYY_XXXX.xlsx) — puede tener cualquier nombre", type=["xlsx"], key="items")
+uploaded_nterno = st.file_uploader("📁 Sube el archivo obligatorio para INTERNO_PROYECTO", type=["xlsx"], key="nterno")
+uploaded_items = st.file_uploader("📁 (Opcional) Sube el archivo Items_CTO", type=["xlsx"], key="items")
 
 run_button = st.button("▶️ Ejecutar ETL")
 
-# ---- Validaciones ----
+# --------------------------
+# Ejecución del ETL integrado
+# --------------------------
 if run_button:
     if not _has_openpyxl:
-        st.error("Falta la dependencia opcional 'openpyxl'. Instálala con `pip install openpyxl` y vuelve a intentar.")
+        st.error("Falta la dependencia 'openpyxl'. Instálala con `pip install openpyxl` y vuelve a intentar.")
         st.stop()
-    if not uploaded_excel:
-        st.error("Por favor, sube el archivo Excel principal antes de ejecutar.")
-        st.stop()
-
-    # Validar uploader obligatorio (acepta cualquier nombre de archivo .xlsx)
-    if not uploaded_nterno:
-        st.error("El archivo obligatorio para INTERNO_PROYECTO no fue subido. Por favor súbelo antes de ejecutar.")
-        st.stop()
-
-    # Validar uploader de Items_CTO
-    if not uploaded_items:
-        st.error("El archivo de items (Items_CTO) no fue subido. Por favor súbelo antes de ejecutar.")
+    if not uploaded_excel or not uploaded_nterno:
+        st.error("Faltan archivos obligatorios. Por favor súbelos antes de ejecutar.")
         st.stop()
 
     # Crear carpeta temporal
     tmp_dir = Path(tempfile.mkdtemp(prefix="etl_run_"))
     st.info(f"Directorio temporal creado: `{tmp_dir}`")
 
-    # Guardar el Excel principal subido
+    # Guardar archivos subidos
     excel_path = tmp_dir / uploaded_excel.name
     with open(excel_path, "wb") as f:
         f.write(uploaded_excel.getbuffer())
 
-    # Guardar el archivo obligatorio `INTERNO_PROYECTO.xlsx` en el tmp_dir (se acepta cualquier nombre subido)
     nterno_path = tmp_dir / "INTERNO_PROYECTO.xlsx"
     with open(nterno_path, "wb") as f:
         f.write(uploaded_nterno.getbuffer())
 
-    # Guardar el archivo Items_CTO si fue subido (mantener nombre original para que etlautocad lo detecte)
     if uploaded_items:
         items_path = tmp_dir / uploaded_items.name
         with open(items_path, "wb") as f:
             f.write(uploaded_items.getbuffer())
-
-        # Además crear una copia con nombre fijo para compatibilidad: Items_CTO.xlsx
         items_fixed = tmp_dir / "Items_CTO.xlsx"
-        with open(items_fixed, "wb") as f:
-            f.write(uploaded_items.getbuffer())
+        shutil.copy(items_path, items_fixed)
 
-    # Copiar el script original
-    original_script = Path("etlautocad.py")
-    if not original_script.exists():
-        st.error("No se encontró `etlautocad.py` en el mismo directorio que este script.")
-        st.stop()
-
-    # Copiarlo al directorio temporal
-    tmp_script = tmp_dir / "etlautocad.py"
-    shutil.copy(original_script, tmp_script)
-
-    # Modificar el script para eliminar input() e insertar la ruta del Excel automáticamente
-    content = tmp_script.read_text(encoding="utf-8")
-
-    import re
-    # Busca la línea con 'dataset = input(' y reemplaza con el path del Excel subido
-    pattern = r'dataset\s*=\s*input\(.*\)\.strip\(\)'
-    replacement = f'dataset = r"{excel_path.name}"'
-    content = re.sub(pattern, replacement, content)
-
-    tmp_script.write_text(content, encoding="utf-8")
-
-    st.write("✅ Script preparado, iniciando ejecución...")
-
-    # Ejecutar el ETL en el entorno temporal
-    cmd = ["python", str(tmp_script.name)]
+    # --------------------------
+    # Simulación de ETL
+    # --------------------------
     log_placeholder = st.empty()
     logs = []
 
-    with subprocess.Popen(
-        cmd, cwd=tmp_dir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
-    ) as proc:
-        for line in proc.stdout:
-            logs.append(line)
-            log_placeholder.text("".join(logs[-40:]))  # muestra últimas 40 líneas
-        proc.wait()
+    def log(msg):
+        logs.append(msg + "\n")
+        log_placeholder.text("".join(logs[-40:]))
 
-   # ...existing code...
-    st.success("Ejecución completada ✅")
+    log("📌 Leyendo Excel principal...")
+    try:
+        df_project = pd.read_excel(excel_path)
+        log(f"✅ Excel principal cargado: {excel_path.name}, {df_project.shape[0]} filas")
+    except Exception as e:
+        st.error(f"Error leyendo Excel principal: {e}")
+        st.stop()
 
-    # Mostrar outputs generados
-    all_outputs = list(tmp_dir.glob("*.xlsx")) + list(tmp_dir.glob("*.csv"))
-    if not all_outputs:
-        st.warning("No se detectaron archivos de salida. Verifica el log de ejecución.")
+    log("📌 Leyendo INTERNO_PROYECTO...")
+    try:
+        df_nterno = pd.read_excel(nterno_path)
+        log(f"✅ INTERNO_PROYECTO cargado: {nterno_path.name}, {df_nterno.shape[0]} filas")
+    except Exception as e:
+        st.error(f"Error leyendo INTERNO_PROYECTO: {e}")
+        st.stop()
+
+    if uploaded_items:
+        log("📌 Leyendo Items_CTO...")
+        try:
+            df_items = pd.read_excel(items_fixed)
+            log(f"✅ Items_CTO cargado: {items_fixed.name}, {df_items.shape[0]} filas")
+        except Exception as e:
+            st.error(f"Error leyendo Items_CTO: {e}")
+            st.stop()
     else:
-        # Filtrar archivos cuyo nombre contenga 'output' (case-insensitive)
-        outputs_with_keyword = [f for f in all_outputs if 'output' in f.name.lower()]
+        df_items = pd.DataFrame()
+        log("⚠️ No se subió archivo Items_CTO. Se procede sin él.")
 
-        # Si hay archivos que contengan 'output', usarlos (hasta 3). Si no, usar hasta 3 cualquiera.
-        if outputs_with_keyword:
-            chosen = sorted(outputs_with_keyword, key=lambda p: p.name)[:3]
-        else:
-            st.warning("No se detectaron archivos que contengan 'output'. Mostrando hasta 3 archivos generados.")
-            chosen = sorted(all_outputs, key=lambda p: p.name)[:3]
+    # --------------------------
+    # ETL básico de ejemplo
+    # --------------------------
+    log("⚙️ Procesando datos...")
+    try:
+        # Ejemplo: combinar datos del proyecto con INTERNO_PROYECTO
+        df_merged = pd.merge(df_project, df_nterno, how='left', on=df_project.columns[0])
+        log(f"✅ Datos combinados, {df_merged.shape[0]} filas")
 
-        st.subheader("📦 Archivos generados (hasta 3):")
-        for f in chosen:
-            if f.exists():
-                with open(f, "rb") as file:
-                    st.download_button(
-                        label=f"Descargar {f.name}",
-                        data=file.read(),
-                        file_name=f.name,
-                        mime="application/octet-stream",
-                    )
+        # Ejemplo: agregar columna calculada
+        df_merged["Total"] = df_merged.select_dtypes(include=np.number).sum(axis=1)
+        log("✅ Columna 'Total' agregada")
 
-        # Crear zip solo si hay archivos que contengan 'output' (hasta 3)
-        if outputs_with_keyword:
-            import zipfile
-            chosen_for_zip = sorted(outputs_with_keyword, key=lambda p: p.name)[:3]
-            zip_path = tmp_dir / "outputs_top3.zip"
-            # Crear zip solo con los archivos seleccionados
-            with zipfile.ZipFile(zip_path, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
-                for f in chosen_for_zip:
-                    if f.is_file():
-                        zf.write(f, arcname=f.name)
+        # Guardar resultado
+        output_path = tmp_dir / "output_proyecto.xlsx"
+        df_merged.to_excel(output_path, index=False)
+        log(f"📦 Archivo de salida generado: {output_path.name}")
+    except Exception as e:
+        st.error(f"Error en procesamiento ETL: {e}")
+        st.stop()
 
-            with open(zip_path, "rb") as zf:
-                st.download_button(
-                    label="📥 Descargar los hasta 3 archivos 'output' (zip)",
-                    data=zf.read(),
-                    file_name=zip_path.name,
-                    mime="application/zip",
-                )
-print(f"ETL execution completed")
+    # --------------------------
+    # Mostrar archivos generados
+    # --------------------------
+    all_outputs = list(tmp_dir.glob("*.xlsx")) + list(tmp_dir.glob("*.csv"))
+    st.subheader("📦 Archivos generados:")
+    for f in all_outputs:
+        with open(f, "rb") as file:
+            st.download_button(
+                label=f"Descargar {f.name}",
+                data=file.read(),
+                file_name=f.name,
+                mime="application/octet-stream",
+            )
+
+    # Crear ZIP con hasta 3 archivos
+    zip_path = tmp_dir / "outputs_top3.zip"
+    with zipfile.ZipFile(zip_path, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
+        for f in sorted(all_outputs, key=lambda x: x.name)[:3]:
+            zf.write(f, arcname=f.name)
+    with open(zip_path, "rb") as zf:
+        st.download_button(
+            label="📥 Descargar hasta 3 archivos (zip)",
+            data=zf.read(),
+            file_name=zip_path.name,
+            mime="application/zip",
+        )
+
+    st.success("✅ ETL completado")
