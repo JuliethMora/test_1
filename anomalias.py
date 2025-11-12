@@ -2591,11 +2591,11 @@ except Exception as e:
     # --------------------------
     # Mostrar archivos generados
     # --------------------------
-    all_outputs = list(tmp_dir.glob("*.xlsx")) + list(tmp_dir.glob("*.csv"))
-    st.subheader("📦 Archivos generados:")
-    for f in all_outputs:
-        with open(f, "rb") as file:
-            st.download_button(
+all_outputs = list(tmp_dir.glob("*.xlsx")) + list(tmp_dir.glob("*.csv"))
+st.subheader("📦 Archivos generados:")
+for f in all_outputs:
+    with open(f, "rb") as file:
+        st.download_button(
                 label=f"Descargar {f.name}",
                 data=file.read(),
                 file_name=f.name,
@@ -2603,16 +2603,16 @@ except Exception as e:
             )
 
     # Crear ZIP con hasta 3 archivos
-    zip_path = tmp_dir / "outputs_top3.zip"
-    with zipfile.ZipFile(zip_path, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
-        for f in sorted(all_outputs, key=lambda x: x.name)[:3]:
-            zf.write(f, arcname=f.name)
-    with open(zip_path, "rb") as zf:
-        st.download_button(
+zip_path = tmp_dir / "outputs_top3.zip"
+with zipfile.ZipFile(zip_path, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
+    for f in sorted(all_outputs, key=lambda x: x.name)[:3]:
+        zf.write(f, arcname=f.name)
+with open(zip_path, "rb") as zf:
+    st.download_button(
             label="📥 Descargar hasta 3 archivos (zip)",
             data=zf.read(),
             file_name=zip_path.name,
             mime="application/zip",
         )
 
-    st.success("✅ ETL completado")
+st.success("✅ ETL completado")
