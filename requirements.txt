@@ -13,3 +13,5 @@ rich==14.2.0
 markdown-it-py==4.0.0
 packaging==24.1
 requests==2.32.3
+pyodbc
+
